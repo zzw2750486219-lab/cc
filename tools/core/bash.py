@@ -24,6 +24,10 @@ SCHEMA: dict[str, Any] = {
 }
 
 
+def register(registry) -> None:
+    registry.register("bash", SCHEMA, handler)
+
+
 async def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
     command: str = args["command"]
     timeout: int = args.get("timeout", 60)

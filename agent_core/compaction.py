@@ -92,7 +92,9 @@ class CompactionPipeline:
             "Earlier in the conversation, the agent executed several tools including "
             "bash commands and file operations to work on the task."
         )
-        summary_msg: dict[str, Any] = {"role": "user", "content": summary}
+        # Ensure alternating roles: if keep[0] is also "user", use "assistant"
+        role: str = "assistant" if keep[0].get("role") == "user" else "user"
+        summary_msg: dict[str, Any] = {"role": role, "content": summary}
         return [summary_msg, *keep]
 
     # Stage 4: collapse entire history into a single summary

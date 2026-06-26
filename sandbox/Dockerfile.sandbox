@@ -1,13 +1,13 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
-RUN pip install --no-cache-dir anthropic
+RUN pip install --no-cache-dir anthropic>=0.60.0
 
 COPY agent_core/ /opt/agent/platform/agent_core/
-COPY tools/ /opt/agent/platform/tools/
-COPY shared/ /opt/agent/platform/shared/
+COPY tools/      /opt/agent/platform/tools/
+COPY shared/     /opt/agent/platform/shared/
 COPY sandbox/bootstrap.py /opt/agent/platform/bootstrap.py
 
 ENV PYTHONPATH=/opt/agent/platform
 WORKDIR /workspace
 
-CMD ["sleep", "infinity"]
+CMD ["python", "/opt/agent/platform/bootstrap.py"]

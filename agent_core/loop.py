@@ -49,6 +49,8 @@ class AgentLoop:
 
         turn = 0
         current_max_tokens = INITIAL_MAX_TOKENS
+        total_input_tokens = 0
+        total_output_tokens = 0
         final_text = ""
 
         while turn < config.max_turns:
@@ -116,11 +118,19 @@ class AgentLoop:
                         error=str(exc),
                     )
 
+            # --- Accumulate token usage ---
+            total_input_tokens += response.input_tokens
+            total_output_tokens += response.output_tokens
+
             # --- Process response ---
             text_blocks = [b for b in response.content if b["type"] == "text"]
             tool_blocks = [b for b in response.content if b["type"] == "tool_use"]
 
-            final_text = "\n".join(b["text"] for b in text_blocks)
+            if text_blocks:
+                final_text = "\n".join(b.get("text", "") for b in text_blocks)
+            else:
+                thinking_blocks = [b for b in response.content if b.get("type") == "thinking"]
+                final_text = "\n".join(b.get("thinking", "") for b in thinking_blocks)
 
             messages.append({"role": "assistant", "content": response.content})
 
@@ -166,11 +176,13 @@ class AgentLoop:
             turn += 1
 
         # --- OnTaskComplete hook ---
+        cost = _estimate_cost(config.model, total_input_tokens, total_output_tokens)
         result = TaskResult(
             task_id=config.task_id,
             success=True,
             summary=final_text,
             num_turns=turn,
+            cost_usd=cost,
         )
 
         hook_result = await self._hooks.run(
@@ -181,3 +193,17 @@ class AgentLoop:
             result = hook_result
 
         return result
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate cost in USD from token counts. Pricing per 1M tokens."""
+    pricing: dict[str, tuple[float, float]] = {
+        "claude-sonnet-4-6-20251101": (3.0, 15.0),
+        "claude-sonnet-4-5": (3.0, 15.0),
+        "claude-opus-4-7": (15.0, 75.0),
+        "claude-opus-4-6": (15.0, 75.0),
+        "claude-haiku-4-5-20251001": (0.80, 4.0),
+        "claude-haiku-4-5": (0.80, 4.0),
+    }
+    input_price, output_price = pricing.get(model, (3.0, 15.0))
+    return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price

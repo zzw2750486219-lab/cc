@@ -23,6 +23,10 @@ SCHEMA: dict[str, Any] = {
 }
 
 
+def register(registry) -> None:
+    registry.register("file_write", SCHEMA, handler)
+
+
 async def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
     file_path: str = args["file_path"]
     content: str = args["content"]

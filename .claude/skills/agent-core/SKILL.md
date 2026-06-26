@@ -43,6 +43,10 @@ tools/core/
 5. Error recovery: 429 backoff, 529 fallback, max_tokens escalate, prompt_too_long reactive compact
 6. Import from shared.models: AgentConfig, TaskResult, TaskStatus
 
+## Global rules
+
+Follow all rules in `CLAUDE.md` at the repo root — imports, signatures, error handling, boundaries. This SKILL defines your specific scope on top of those rules.
+
 ## Do NOT touch
 
 api/, orchestrator/, sandbox/, pyproject.toml, docker-compose.yml, Dockerfile, Makefile

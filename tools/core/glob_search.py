@@ -24,6 +24,10 @@ SCHEMA: dict[str, Any] = {
 }
 
 
+def register(registry) -> None:
+    registry.register("glob_search", SCHEMA, handler)
+
+
 async def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
     pattern: str = args["pattern"]
     subdir: str = args.get("path", "")

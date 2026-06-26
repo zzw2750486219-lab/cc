@@ -42,6 +42,10 @@ SSE events: task.started, task.turn, task.tool_call, task.tool_result, task.comp
 3. OrchestratorWorker: dequeue → sandbox → agent → stream → cleanup
 4. Import from shared.models: Task, TaskResult, TaskStatus, AgentConfig, SandboxConfig
 
+## Global rules
+
+Follow all rules in `CLAUDE.md` at the repo root — imports, signatures, error handling, boundaries. This SKILL defines your specific scope on top of those rules.
+
 ## Do NOT touch
 
 agent_core/, tools/, sandbox/

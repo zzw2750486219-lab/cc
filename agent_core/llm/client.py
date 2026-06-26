@@ -68,12 +68,15 @@ class LLMClient:
 def _blocks_to_dicts(blocks: list[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for block in blocks:
-        d: dict[str, Any] = {"type": block.type}
-        if block.type == "text":
-            d["text"] = block.text
-        elif block.type == "tool_use":
-            d["id"] = block.id
-            d["name"] = block.name
-            d["input"] = block.input
-        result.append(d)
+        if hasattr(block, "model_dump"):
+            result.append(block.model_dump())
+        else:
+            d: dict[str, Any] = {"type": block.type}
+            if block.type == "text":
+                d["text"] = block.text
+            elif block.type == "tool_use":
+                d["id"] = block.id
+                d["name"] = block.name
+                d["input"] = block.input
+            result.append(d)
     return result

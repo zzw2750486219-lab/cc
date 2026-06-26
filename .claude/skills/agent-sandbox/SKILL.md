@@ -38,6 +38,10 @@ create(config) → handle, execute(handle, cmd, env, timeout) → result, write_
 
 FROM python:3.12-slim, pip install anthropic, COPY agent_core/ tools/ shared/ bootstrap.py, PYTHONPATH=/opt/agent/platform, WORKDIR /workspace
 
+## Global rules
+
+Follow all rules in `CLAUDE.md` at the repo root — imports, signatures, error handling, boundaries. This SKILL defines your specific scope on top of those rules.
+
 ## Do NOT touch
 
 api/, orchestrator/, agent_core/, tools/, root Dockerfile, pyproject.toml
