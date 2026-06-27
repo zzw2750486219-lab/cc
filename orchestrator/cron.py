@@ -36,19 +36,6 @@ class CronJob:
 
 
 async def stale_task_cleanup(task_store, max_age: float = 3600) -> None:
-    from shared.models import TaskStatus
-
-    removable = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
-    stale_ids: list[str] = []
-    for task_id, task in list(task_store._tasks.items()):
-        if task.status in removable:
-            stale_ids.append(task_id)
-
-    for task_id in stale_ids:
-        del task_store._tasks[task_id]
-        events = getattr(task_store, "_events", None)
-        if events and task_id in events:
-            del events[task_id]
-
-    if stale_ids:
-        logger.info("cleanup: removed %d stale tasks", len(stale_ids))
+    count = await task_store.remove_terminal()
+    if count:
+        logger.info("cleanup: removed %d stale tasks", count)

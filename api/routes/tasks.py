@@ -62,6 +62,26 @@ class TaskStore:
     async def get_event_queue(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
         return self._events.get(task_id)
 
+    async def remove(self, task_id: str) -> bool:
+        async with self._lock:
+            if task_id in self._tasks:
+                del self._tasks[task_id]
+            if task_id in self._events:
+                del self._events[task_id]
+            return True
+        return False
+
+    async def remove_terminal(self) -> int:
+        """Remove all COMPLETED, FAILED, or CANCELLED tasks. Returns count removed."""
+        async with self._lock:
+            removable = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+            stale_ids = [tid for tid, t in self._tasks.items() if t.status in removable]
+            for tid in stale_ids:
+                del self._tasks[tid]
+                if tid in self._events:
+                    del self._events[tid]
+            return len(stale_ids)
+
     async def _push_event(self, task_id: str, event: str, data: dict[str, Any]) -> None:
         q = self._events.get(task_id)
         if q:

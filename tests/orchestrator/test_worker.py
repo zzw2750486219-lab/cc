@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,12 +174,10 @@ class TestOrchestratorWorker:
     async def test_run_loop_cancelled_error(self, queue, store):
         worker = OrchestratorWorker(queue, store, concurrency=1)
 
-        # Create a task that will be processed
         task = Task(prompt="test", status=TaskStatus.PENDING)
         await store.create(task)
         await queue.enqueue({"id": task.id, "prompt": task.prompt})
 
-        # Start the loop and cancel it immediately
         loop_task = asyncio.create_task(worker._run_loop())
         await asyncio.sleep(0.2)
         loop_task.cancel()
@@ -186,4 +185,174 @@ class TestOrchestratorWorker:
             await loop_task
         except asyncio.CancelledError:
             pass
-        # Should exit cleanly
+
+    @pytest.mark.asyncio
+    async def test_process_stores_workspace_files(self, queue, store):
+        """Inline mode _process captures workspace files from snapshot."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        payload = {"id": task.id, "prompt": task.prompt}
+        await queue.enqueue(payload)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+        with patch.object(worker, "_run_agent_inline", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = TaskResult(task_id=task.id, success=True, summary="ok")
+            with patch.object(worker, "_snapshot_workspace", new_callable=AsyncMock) as mock_snap:
+                mock_snap.return_value = ["/workspace/a.txt", "/workspace/b.txt"]
+                await worker._process(payload)
+
+        updated = await store.get(task.id)
+        assert updated.workspace_files == ["/workspace/a.txt", "/workspace/b.txt"]
+
+    @pytest.mark.asyncio
+    async def test_process_handles_exception(self, queue, store):
+        """When _run_agent_inline raises, task is marked FAILED."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        payload = {"id": task.id, "prompt": task.prompt}
+        await queue.enqueue(payload)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+        with patch.object(worker, "_run_agent_inline", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = RuntimeError("boom")
+            await worker._process(payload)
+
+        updated = await store.get(task.id)
+        assert updated.status == TaskStatus.FAILED
+        assert "boom" in (updated.error or "")
+
+    @pytest.mark.asyncio
+    async def test_process_pushes_failed_event_on_error(self, queue, store):
+        """On error, task.failed is pushed to the event queue."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        payload = {"id": task.id, "prompt": task.prompt}
+        await queue.enqueue(payload)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+        with patch.object(worker, "_run_agent_inline", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = RuntimeError("crash")
+            await worker._process(payload)
+
+        q = await store.get_event_queue(task.id)
+        # Consume events until we find task.failed
+        found = False
+        while not q.empty():
+            evt = q.get_nowait()
+            if evt["event"] == "task.failed":
+                assert "crash" in str(evt["data"].get("error", ""))
+                found = True
+        assert found
+
+    @pytest.mark.asyncio
+    async def test_docker_process_sandbox_events(self, queue, store):
+        """Docker mode pushes sandbox.created and sandbox.destroyed events."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        payload = {"id": task.id, "prompt": task.prompt}
+        await queue.enqueue(payload)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+        worker._sandbox_mode = "docker"
+        worker._workspace_dir = "/workspace"
+
+        sb_id = "abc123def456"
+        mock_result = TaskResult(task_id=task.id, success=True, summary="done", num_turns=1)
+
+        with patch.object(worker, "_create_sandbox", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = sb_id
+            with patch.object(worker, "_run_agent_in_sandbox", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = mock_result
+                with patch.object(worker, "_destroy_sandbox", new_callable=AsyncMock):
+                    with patch.object(worker, "_snapshot_workspace", new_callable=AsyncMock, return_value=[]):
+                        await worker._process(payload)
+
+        q = await store.get_event_queue(task.id)
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait()["event"])
+
+        assert "sandbox.created" in events
+        assert "sandbox.destroyed" in events
+
+    @pytest.mark.asyncio
+    async def test_sandbox_failure_cleans_up(self, queue, store):
+        """When _run_agent_in_sandbox fails, sandbox is still destroyed in finally."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        payload = {"id": task.id, "prompt": task.prompt}
+        await queue.enqueue(payload)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+        worker._sandbox_mode = "docker"
+        worker._workspace_dir = "/workspace"
+
+        with patch.object(worker, "_create_sandbox", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = "sb-fail"
+            with patch.object(worker, "_run_agent_in_sandbox", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = RuntimeError("sandbox crash")
+                with patch.object(worker, "_destroy_sandbox", new_callable=AsyncMock) as mock_destroy:
+                    await worker._process(payload)
+                    mock_destroy.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_agent_in_sandbox_parses_tool_events(self, queue, store):
+        """stdout with event lines are pushed to SSE, last line is TaskResult."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+
+        from shared.models import AgentConfig
+        config = AgentConfig(task_id=task.id, prompt=task.prompt)
+
+        stdout_lines = [
+            json.dumps({"event": "task.tool_call", "data": {"tool": "bash", "args": {"command": "ls"}}}),
+            json.dumps({"event": "task.tool_result", "data": {"tool": "bash", "result": "file.txt"}}),
+            json.dumps({"task_id": task.id, "success": True, "summary": "done", "num_turns": 2, "cost_usd": 0.01, "error": None}),
+        ]
+
+        mock_exec = MagicMock()
+        mock_exec.exit_code = 0
+        mock_exec.stdout = "\n".join(stdout_lines)
+        mock_exec.stderr = ""
+
+        with patch("sandbox.providers.docker_provider.DockerProvider") as MockProvider:
+            instance = MockProvider.return_value
+            instance.write_file = AsyncMock()
+            instance.execute = AsyncMock(return_value=mock_exec)
+            result = await worker._run_agent_in_sandbox(task, config, "sb-1")
+
+        assert result.success is True
+        assert result.summary == "done"
+        assert result.num_turns == 2
+
+    @pytest.mark.asyncio
+    async def test_run_agent_in_sandbox_exit_code_nonzero(self, queue, store):
+        """Non-zero exit code returns failed TaskResult with stderr."""
+        task = Task(prompt="test", status=TaskStatus.PENDING)
+        await store.create(task)
+
+        worker = OrchestratorWorker(queue, store, concurrency=1)
+
+        from shared.models import AgentConfig
+        config = AgentConfig(task_id=task.id, prompt=task.prompt)
+
+        mock_exec = MagicMock()
+        mock_exec.exit_code = 1
+        mock_exec.stdout = "something went wrong"
+        mock_exec.stderr = "LLM authentication failed"
+
+        with patch("sandbox.providers.docker_provider.DockerProvider") as MockProvider:
+            instance = MockProvider.return_value
+            instance.write_file = AsyncMock()
+            instance.execute = AsyncMock(return_value=mock_exec)
+            result = await worker._run_agent_in_sandbox(task, config, "sb-1")
+
+        assert result.success is False
+        assert "LLM authentication failed" in (result.error or "")

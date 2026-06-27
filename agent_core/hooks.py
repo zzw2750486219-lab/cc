@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Awaitable
 from enum import Enum
 from typing import Any
+
+logger = logging.getLogger("agent-core.hooks")
 
 
 class HookPoint(str, Enum):
@@ -26,7 +29,11 @@ class HookRegistry:
 
     async def run(self, point: HookPoint, **kwargs: Any) -> Any:
         for callback in self._hooks[point]:
-            result = await callback(**kwargs)
+            try:
+                result = await callback(**kwargs)
+            except Exception:
+                logger.exception("hook callback failed point=%s", point)
+                continue
             if result is not None:
                 return result
         return None

@@ -67,6 +67,17 @@
   .status.completed { background: var(--green); }
   .status.failed { background: var(--red); }
   .status.cancelled { background: var(--muted); }
+  .cancel-btn {
+    background: var(--red);
+    color: #fff;
+    border: none;
+    padding: 2px 8px;
+    border-radius: var(--radius);
+    font-size: 11px;
+    cursor: pointer;
+    margin-left: auto;
+  }
+  .cancel-btn:hover { opacity: 0.8; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
   /* Workspace panel */
@@ -187,7 +198,7 @@
 <aside>
   <header>
     <h1>Cloud Agent Platform</h1>
-    <p>Task history</p>
+    <p id="task-count">Task history</p>
   </header>
   <div id="task-list">
     <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No tasks yet</div>
@@ -242,6 +253,17 @@ async function loadTasks() {
     list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No tasks yet</div>';
     return;
   }
+  // Update header and page title
+  const active = tasks.filter(t => t.status === 'running' || t.status === 'pending');
+  const countEl = $('#task-count');
+  if (active.length) {
+    countEl.textContent = `Task history — ${active.length} active`;
+    document.title = `(${active.length}) Cloud Agent Platform`;
+  } else {
+    countEl.textContent = 'Task history';
+    document.title = 'Cloud Agent Platform';
+  }
+
   list.innerHTML = tasks.reverse().map(t => `
     <div class="task-card ${t.id === activeTaskId ? 'active' : ''}" onclick="selectTask('${t.id}')">
       <div class="id">${t.id}${t.sandbox_id ? ' • sandbox' : ''}</div>
@@ -251,13 +273,14 @@ async function loadTasks() {
         <span>${t.status}</span>
         <span>turns: ${t.num_turns || 0}</span>
         ${t.cost_usd != null ? '<span>$' + t.cost_usd.toFixed(4) + '</span>' : ''}
+        ${(t.status === 'running' || t.status === 'pending') ? '<button class="cancel-btn" onclick="event.stopPropagation();cancelTask(\'' + t.id + '\')">Cancel</button>' : ''}
       </div>
     </div>
   `).join('');
 }
 
 function esc(s) {
-  return s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 async function showWorkspace(taskId) {
@@ -314,16 +337,19 @@ function logEvent(event, data) {
   el.appendChild(entry);
   el.scrollTop = el.scrollHeight;
 
-  // Status bar
+  // Status bar + task list refresh
   if (event === 'task.started') {
     $('#status-dot').style.background = 'var(--accent)';
     $('#status-text').textContent = 'Running...';
+    loadTasks();
   } else if (event === 'sandbox.created') {
     const badge = $('#sandbox-badge');
     badge.textContent = 'sandbox: ' + (data.sandbox_id || '');
     badge.classList.add('visible');
+    loadTasks();
   } else if (event === 'sandbox.destroyed') {
     $('#sandbox-badge').classList.remove('visible');
+    loadTasks();
   } else if (event === 'task.completed') {
     $('#status-dot').style.background = 'var(--green)';
     $('#status-text').textContent = 'Ready';
@@ -338,27 +364,52 @@ function logEvent(event, data) {
   }
 }
 
+async function cancelTask(id) {
+  try {
+    await fetch(`${API}/${id}/cancel`, { method: 'POST' });
+    loadTasks();
+  } catch (e) {
+    console.error('cancel failed', e);
+  }
+}
+
 async function submitTask(e) {
   e.preventDefault();
   const prompt = $('#prompt').value.trim();
   if (!prompt) return;
 
-  const res = await fetch(API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      prompt: prompt,
-      max_turns: parseInt($('#max-turns').value) || 10,
-    }),
-  });
-  const task = await res.json();
-  activeTaskId = task.id;
-  await loadTasks();
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+
+  let task;
+  try {
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: prompt,
+        max_turns: parseInt($('#max-turns').value) || 10,
+      }),
+    });
+    task = await res.json();
+    activeTaskId = task.id;
+    await loadTasks();
+  } catch (e) {
+    logEvent('task.failed', { error: 'Failed to submit task: ' + e.message });
+    btn.disabled = false;
+    btn.textContent = 'Submit';
+    return;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Submit';
 
   $('#event-log').innerHTML = '';
 
-  const es = new EventSource(`${API}/${task.id}/stream`);
-  eventSources[task.id] = es;
+  const tid = task.id;
+  const es = new EventSource(`${API}/${tid}/stream`);
+  eventSources[tid] = es;
 
   const events = ['task.started', 'task.tool_call', 'task.tool_result',
                   'task.completed', 'task.failed', 'task.cancelled',
@@ -371,11 +422,33 @@ async function submitTask(e) {
       }
     });
   });
-  es.onerror = () => setTimeout(() => es.close(), 3000);
+  es.onerror = () => {
+    const taskStatus = $('#status-text').textContent;
+    if (taskStatus === 'Running...') {
+      // Reconnect if task may still be running
+      setTimeout(() => {
+        es.close();
+        const newEs = new EventSource(`${API}/${tid}/stream`);
+        eventSources[tid] = newEs;
+        events.forEach(ev => {
+          newEs.addEventListener(ev, (e) => {
+            logEvent(ev, JSON.parse(e.data));
+            if (ev === 'task.completed' || ev === 'task.failed' || ev === 'task.cancelled') {
+              newEs.close();
+            }
+          });
+        });
+        newEs.onerror = es.onerror;
+      }, 2000);
+    } else {
+      setTimeout(() => es.close(), 3000);
+    }
+  };
 }
 
 loadTasks();
-setInterval(loadTasks, 5000);
+// Slow-fallback refresh in case SSE misses an event
+setInterval(loadTasks, 30000);
 </script>
 </body>
 </html>

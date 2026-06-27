@@ -97,3 +97,23 @@ class TestHookRegistry:
 
         await registry.run(HookPoint.POST_TOOL_USE)
         assert post_called is True
+
+    @pytest.mark.asyncio
+    async def test_failing_callback_does_not_crash_run(self, registry):
+        """If a hook callback raises, it's logged and subsequent callbacks still fire."""
+        second_fired = False
+
+        async def crash(**kw):
+            raise RuntimeError("hook bug")
+
+        async def fallback(**kw):
+            nonlocal second_fired
+            second_fired = True
+            return "recovered"
+
+        registry.register(HookPoint.BEFORE_LLM_CALL, crash)
+        registry.register(HookPoint.BEFORE_LLM_CALL, fallback)
+
+        result = await registry.run(HookPoint.BEFORE_LLM_CALL)
+        assert result == "recovered"
+        assert second_fired is True

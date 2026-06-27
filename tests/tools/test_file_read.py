@@ -62,3 +62,16 @@ class TestFileReadTool:
             {"workspace_dir": temp_workspace},
         )
         assert "is a directory" in result
+
+    @pytest.mark.asyncio
+    async def test_symlink_escape_blocked(self, temp_workspace):
+        """A symlink inside workspace pointing outside should be blocked."""
+        import os as _os
+        link_path = _os.path.join(temp_workspace, "escape")
+        _os.symlink("/etc", link_path)
+
+        result = await file_read_handler(
+            {"file_path": "escape/hosts"},
+            {"workspace_dir": temp_workspace},
+        )
+        assert "path traversal" in result.lower() or "file not found" in result.lower()

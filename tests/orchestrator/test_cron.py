@@ -61,16 +61,23 @@ class TestStaleTaskCleanup:
         import logging
 
         class MockStore:
-            _tasks = {}
+            def __init__(self, tasks):
+                self._tasks = tasks
 
-        store = MockStore()
-        store._tasks = {
+            async def remove_terminal(self):
+                removable = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+                stale = [tid for tid, t in self._tasks.items() if t.status in removable]
+                for tid in stale:
+                    del self._tasks[tid]
+                return len(stale)
+
+        store = MockStore({
             "t1": Task(prompt="a", status=TaskStatus.COMPLETED),
             "t2": Task(prompt="b", status=TaskStatus.FAILED),
             "t3": Task(prompt="c", status=TaskStatus.CANCELLED),
             "t4": Task(prompt="d", status=TaskStatus.RUNNING),
             "t5": Task(prompt="e", status=TaskStatus.PENDING),
-        }
+        })
 
         with caplog.at_level(logging.INFO, logger="agent-platform.cron"):
             await stale_task_cleanup(store)
@@ -82,12 +89,19 @@ class TestStaleTaskCleanup:
         import logging
 
         class MockStore:
-            _tasks = {}
+            def __init__(self, tasks):
+                self._tasks = tasks
 
-        store = MockStore()
-        store._tasks = {
+            async def remove_terminal(self):
+                removable = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+                stale = [tid for tid, t in self._tasks.items() if t.status in removable]
+                for tid in stale:
+                    del self._tasks[tid]
+                return len(stale)
+
+        store = MockStore({
             "t1": Task(prompt="a", status=TaskStatus.RUNNING),
-        }
+        })
 
         with caplog.at_level(logging.INFO, logger="agent-platform.cron"):
             await stale_task_cleanup(store)

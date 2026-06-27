@@ -50,6 +50,22 @@ async def main() -> None:
     register_file_write(tool_registry)
     register_glob_search(tool_registry)
 
+    # Bridge tool events to stdout so the orchestrator can stream them via SSE
+    from agent_core.hooks import HookPoint
+
+    async def on_tool(**kwargs):
+        tool_name = kwargs.get("tool_name", "")
+        args = kwargs.get("args", {})
+        print(json.dumps({"event": "task.tool_call", "data": {"tool": tool_name, "args": args}}), flush=True)
+
+    async def on_result(**kwargs):
+        tool_name = kwargs.get("tool_name", "")
+        result = str(kwargs.get("result", ""))
+        print(json.dumps({"event": "task.tool_result", "data": {"tool": tool_name, "result": result}}), flush=True)
+
+    hook_registry.register(HookPoint.PRE_TOOL_USE, on_tool)
+    hook_registry.register(HookPoint.POST_TOOL_USE, on_result)
+
     loop = AgentLoop(
         config=config,
         llm_client=llm_client,
@@ -60,7 +76,8 @@ async def main() -> None:
 
     result = await loop.run()
 
-    print(json.dumps(result.to_dict()))
+    # Final result line — parsed by the orchestrator as TaskResult
+    print(json.dumps(result.to_dict()), flush=True)
 
     sys.exit(0 if result.success else 1)
 

@@ -25,12 +25,10 @@ class OrchestratorWorker:
         self,
         queue,
         task_store,
-        api_base_url: str = "http://localhost:8000",
         concurrency: int = 2,
     ):
         self._queue = queue
         self._store = task_store
-        self._api_base_url = api_base_url.rstrip("/")
         self._concurrency = concurrency
         self._tasks: set[asyncio.Task] = set()
         self._llm_api_key = os.getenv("LLM_API_KEY", "")
@@ -85,6 +83,11 @@ class OrchestratorWorker:
         sandbox_id = None
 
         try:
+            workspace_dir = self._workspace_dir
+            if self._sandbox_mode != "docker":
+                workspace_dir = os.path.join(self._workspace_dir, task_id)
+                os.makedirs(workspace_dir, exist_ok=True)
+
             agent_config = AgentConfig(
                 task_id=task_id,
                 prompt=task.prompt,
@@ -93,7 +96,7 @@ class OrchestratorWorker:
                 tool_whitelist=task.tool_whitelist,
                 llm_api_key=self._llm_api_key,
                 llm_base_url=self._llm_base_url,
-                workspace_dir=self._workspace_dir,
+                workspace_dir=workspace_dir,
             )
 
             if self._sandbox_mode == "docker":
@@ -106,7 +109,7 @@ class OrchestratorWorker:
             else:
                 result = await self._run_agent_inline(task, agent_config)
 
-            workspace_files = await self._snapshot_workspace(sandbox_id)
+            workspace_files = await self._snapshot_workspace(sandbox_id, workspace_dir)
 
             # Destroy sandbox before marking complete so SSE client sees the full lifecycle
             if sandbox_id:
@@ -140,6 +143,11 @@ class OrchestratorWorker:
         finally:
             if sandbox_id:
                 await self._destroy_sandbox(sandbox_id)
+            elif self._sandbox_mode != "docker":
+                import shutil
+                task_ws = os.path.join(self._workspace_dir, task_id)
+                if os.path.isdir(task_ws):
+                    shutil.rmtree(task_ws, ignore_errors=True)
             self._queue.task_done(task_id)
 
     # ------------------------------------------------------------------
@@ -171,7 +179,7 @@ class OrchestratorWorker:
     # Workspace snapshot
     # ------------------------------------------------------------------
 
-    async def _snapshot_workspace(self, sandbox_id: str | None = None) -> list[str]:
+    async def _snapshot_workspace(self, sandbox_id: str | None = None, workspace_dir: str = "") -> list[str]:
         """List workspace files. Docker mode runs find in container, inline mode walks locally."""
         try:
             if sandbox_id:
@@ -181,7 +189,7 @@ class OrchestratorWorker:
                 if result.exit_code == 0:
                     return [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
             else:
-                ws = self._workspace_dir
+                ws = workspace_dir or self._workspace_dir
                 if os.path.isdir(ws):
                     files: list[str] = []
                     for root, _, filenames in os.walk(ws):
@@ -252,7 +260,8 @@ class OrchestratorWorker:
         return await loop.run()
 
     async def _run_agent_in_sandbox(self, task: Task, config: AgentConfig, sandbox_id: str) -> TaskResult:
-        """Write agent_config.json to the sandbox and execute bootstrap.py."""
+        """Write agent_config.json to the sandbox and execute bootstrap.py.
+        Parses stdout line-by-line: tool events are pushed to SSE, the final line is the TaskResult."""
         from sandbox.providers.docker_provider import DockerProvider
 
         provider = DockerProvider()
@@ -273,6 +282,33 @@ class OrchestratorWorker:
                 error=result_exec.stderr or "sandbox execution failed",
             )
 
+        # Parse stdout line-by-line. Tool events are bridged to SSE, last line is TaskResult.
+        task_result = None
+        for line in result_exec.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if "event" in obj:
+                await self._push_event(task.id, obj["event"], obj.get("data", {}))
+            elif "task_id" in obj and "success" in obj:
+                task_result = TaskResult(
+                    task_id=obj.get("task_id", task.id),
+                    success=obj.get("success", False),
+                    summary=obj.get("summary", ""),
+                    num_turns=obj.get("num_turns", 0),
+                    cost_usd=obj.get("cost_usd"),
+                    error=obj.get("error"),
+                )
+
+        if task_result is not None:
+            return task_result
+
+        # Fallback: try parsing entire stdout as single JSON (backward compat)
         try:
             data = json.loads(result_exec.stdout)
             return TaskResult(
@@ -303,13 +339,11 @@ class OrchestratorWorker:
 async def run_worker(
     queue,
     store,
-    api_base_url: str = "http://localhost:8000",
     concurrency: int = 2,
 ) -> None:
     worker = OrchestratorWorker(
         queue=queue,
         task_store=store,
-        api_base_url=api_base_url,
         concurrency=concurrency,
     )
     await worker.start()
@@ -331,7 +365,6 @@ if __name__ == "__main__":
 
     queue = TaskQueue()
     store = ApiTaskStore()
-    api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
     concurrency = int(os.getenv("WORKER_CONCURRENCY", "2"))
 
-    asyncio.run(run_worker(queue, store, api_base_url, concurrency))
+    asyncio.run(run_worker(queue, store, concurrency))

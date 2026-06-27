@@ -55,7 +55,7 @@ def handle_error(
 
     error_msg = _error_text(error_body).lower()
 
-    if "max_tokens" in error_msg or "token" in error_msg and "exceed" in error_msg:
+    if "max_tokens" in error_msg or ("token" in error_msg and "exceed" in error_msg):
         return EscalateTokens(MAX_TOKENS_ESCALATED)
 
     if "prompt" in error_msg and ("too_long" in error_msg or "too long" in error_msg):

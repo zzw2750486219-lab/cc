@@ -34,7 +34,12 @@ async def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
     workspace: str = context.get("workspace_dir", "/workspace")
 
     search_dir = os.path.normpath(os.path.join(workspace, subdir))
-    if not search_dir.startswith(os.path.normpath(workspace) + os.sep) and search_dir != os.path.normpath(workspace):
+    workspace_real = os.path.realpath(workspace)
+    try:
+        search_real = os.path.realpath(search_dir)
+    except OSError:
+        search_real = os.path.realpath(os.path.dirname(search_dir))
+    if not search_real.startswith(workspace_real + os.sep) and search_real != workspace_real:
         return "Error: path traversal not allowed"
 
     full_pattern = os.path.join(search_dir, pattern)
