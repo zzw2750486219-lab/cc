@@ -36,8 +36,11 @@ class OrchestratorWorker:
         self._llm_api_key = os.getenv("LLM_API_KEY", "")
         self._llm_base_url = os.getenv("LLM_BASE_URL", os.getenv("ANTHROPIC_BASE_URL"))
         self._sandbox_mode = os.getenv("SANDBOX_MODE", "inline")
-        default_ws = "/workspace" if os.path.isdir("/workspace") else "/tmp/workspace"
-        self._workspace_dir = os.getenv("WORKSPACE_DIR", default_ws)
+        if self._sandbox_mode == "docker":
+            self._workspace_dir = "/workspace"
+        else:
+            default_ws = "/workspace" if os.path.isdir("/workspace") else "/tmp/workspace"
+            self._workspace_dir = os.getenv("WORKSPACE_DIR", default_ws)
 
     async def start(self) -> None:
         logger.info("worker starting concurrency=%d mode=%s", self._concurrency, self._sandbox_mode)
@@ -95,9 +98,24 @@ class OrchestratorWorker:
 
             if self._sandbox_mode == "docker":
                 sandbox_id = await self._create_sandbox(task)
+                await self._push_event(task_id, "sandbox.created", {
+                    "task_id": task_id,
+                    "sandbox_id": sandbox_id[:12],
+                })
                 result = await self._run_agent_in_sandbox(task, agent_config, sandbox_id)
             else:
                 result = await self._run_agent_inline(task, agent_config)
+
+            workspace_files = await self._snapshot_workspace(sandbox_id)
+
+            # Destroy sandbox before marking complete so SSE client sees the full lifecycle
+            if sandbox_id:
+                await self._push_event(task_id, "sandbox.destroyed", {
+                    "task_id": task_id,
+                    "sandbox_id": sandbox_id[:12],
+                })
+                await self._destroy_sandbox(sandbox_id)
+                sandbox_id = None
 
             await self._push_event(task_id, "task.completed", result.to_dict())
             await self._store.update(
@@ -107,6 +125,7 @@ class OrchestratorWorker:
                 num_turns=result.num_turns,
                 cost_usd=result.cost_usd,
                 error=result.error,
+                workspace_files=workspace_files,
             )
 
         except asyncio.CancelledError:
@@ -147,6 +166,35 @@ class OrchestratorWorker:
         logger.info("destroying sandbox id=%s", sandbox_id)
         provider = DockerProvider()
         await provider.destroy(sandbox_id)
+
+    # ------------------------------------------------------------------
+    # Workspace snapshot
+    # ------------------------------------------------------------------
+
+    async def _snapshot_workspace(self, sandbox_id: str | None = None) -> list[str]:
+        """List workspace files. Docker mode runs find in container, inline mode walks locally."""
+        try:
+            if sandbox_id:
+                from sandbox.providers.docker_provider import DockerProvider
+                provider = DockerProvider()
+                result = await provider.execute(sandbox_id, "find /workspace -type f | sort | head -50", timeout=10)
+                if result.exit_code == 0:
+                    return [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+            else:
+                ws = self._workspace_dir
+                if os.path.isdir(ws):
+                    files: list[str] = []
+                    for root, _, filenames in os.walk(ws):
+                        for fn in filenames:
+                            if ".pyc" in fn or fn.startswith("."):
+                                continue
+                            full = os.path.join(root, fn)
+                            rel = "/workspace" + full[len(ws):]
+                            files.append(rel)
+                    return sorted(files)[:50]
+        except Exception:
+            logger.debug("workspace snapshot skipped", exc_info=True)
+        return []
 
     # ------------------------------------------------------------------
     # Agent execution

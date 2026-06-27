@@ -30,6 +30,7 @@ class Task:
     cost_usd: float | None = None
     error: str | None = None
     webhook_url: str | None = None
+    workspace_files: list[str] | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -39,6 +40,7 @@ class Task:
             "sandbox_id": self.sandbox_id, "result_summary": self.result_summary,
             "num_turns": self.num_turns, "cost_usd": self.cost_usd,
             "error": self.error, "webhook_url": self.webhook_url,
+            "workspace_files": self.workspace_files,
         }
         return {k: v for k, v in d.items() if v is not None}
 

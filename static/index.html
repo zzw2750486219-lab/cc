@@ -15,6 +15,8 @@
     --green: #3fb950;
     --red: #f85149;
     --yellow: #d2991d;
+    --purple: #a371f7;
+    --orange: #f0883e;
     --radius: 6px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -28,7 +30,7 @@
 
   /* Sidebar */
   aside {
-    width: 320px;
+    width: 340px;
     background: var(--surface);
     border-right: 1px solid var(--border);
     display: flex;
@@ -58,7 +60,7 @@
   .task-card.active { border-color: var(--accent); background: #1c2333; }
   .task-card .id { font-size: 11px; color: var(--muted); font-family: monospace; }
   .task-card .prompt { font-size: 13px; margin: 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .task-card .meta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; }
+  .task-card .meta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
   .status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
   .status.pending { background: var(--yellow); }
   .status.running { background: var(--accent); animation: pulse 1s infinite; }
@@ -66,6 +68,34 @@
   .status.failed { background: var(--red); }
   .status.cancelled { background: var(--muted); }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Workspace panel */
+  #workspace-panel {
+    border-top: 1px solid var(--border);
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 12px;
+    display: none;
+  }
+  #workspace-panel.visible { display: block; }
+  #workspace-panel h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  #workspace-panel .file-tree { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+  #workspace-panel .file-row {
+    padding: 3px 0;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #workspace-panel .file-row::before { content: '📄'; font-size: 10px; }
+  #workspace-panel .file-row.dir::before { content: '📁'; }
+  #workspace-panel .empty-files { color: var(--muted); font-size: 12px; text-align: center; padding: 16px; }
 
   /* Main */
   main {
@@ -83,6 +113,17 @@
   }
   main header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
   main header span { font-size: 14px; }
+  #sandbox-badge {
+    display: none;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #1c2333;
+    border: 1px solid var(--purple);
+    color: var(--purple);
+    font-family: monospace;
+  }
+  #sandbox-badge.visible { display: inline; }
 
   /* Form */
   #submit-form {
@@ -127,22 +168,18 @@
     font-size: 13px;
     line-height: 1.6;
   }
-  #event-log .entry { padding: 4px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; }
+  #event-log .entry { padding: 4px 0; border-bottom: 1px solid rgba(48,54,61,0.5); display: flex; gap: 10px; }
   #event-log .time { color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 70px; }
-  #event-log .event { font-weight: 600; min-width: 110px; font-size: 12px; }
+  #event-log .event { font-weight: 600; min-width: 115px; font-size: 12px; }
   #event-log .event.started { color: var(--accent); }
+  #event-log .event.sandbox_created { color: var(--purple); }
+  #event-log .event.sandbox_destroyed { color: var(--orange); }
   #event-log .event.tool_call { color: var(--yellow); }
   #event-log .event.tool_result { color: var(--muted); }
   #event-log .event.completed { color: var(--green); }
   #event-log .event.failed, .event.cancelled { color: var(--red); }
   #event-log .detail { color: var(--muted); word-break: break-all; }
-
-  #event-log .empty {
-    color: var(--muted);
-    text-align: center;
-    margin-top: 60px;
-    font-size: 14px;
-  }
+  #event-log .empty { color: var(--muted); text-align: center; margin-top: 60px; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -155,18 +192,23 @@
   <div id="task-list">
     <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No tasks yet</div>
   </div>
+  <div id="workspace-panel">
+    <h3>Workspace Files</h3>
+    <div class="file-tree" id="file-tree"></div>
+  </div>
 </aside>
 
 <main>
   <header>
     <div class="dot" id="status-dot"></div>
     <span id="status-text">Ready</span>
+    <span id="sandbox-badge"></span>
   </header>
 
   <form id="submit-form" onsubmit="submitTask(event)">
     <div class="field">
       <label>Prompt</label>
-      <input type="text" id="prompt" placeholder="e.g. Scan this repo, find all TODOs, write a report"
+      <input type="text" id="prompt" placeholder="e.g. Scan this repo, find all TODOs, write a report to TODOS.md"
              value="Create a file /workspace/data.txt with the numbers 1-10, then write a Python script to sum them and run it">
     </div>
     <div class="field">
@@ -202,12 +244,13 @@ async function loadTasks() {
   }
   list.innerHTML = tasks.reverse().map(t => `
     <div class="task-card ${t.id === activeTaskId ? 'active' : ''}" onclick="selectTask('${t.id}')">
-      <div class="id">${t.id}</div>
+      <div class="id">${t.id}${t.sandbox_id ? ' • sandbox' : ''}</div>
       <div class="prompt">${esc(t.prompt)}</div>
       <div class="meta">
         <span class="status ${t.status}"></span>
         <span>${t.status}</span>
         <span>turns: ${t.num_turns || 0}</span>
+        ${t.cost_usd != null ? '<span>$' + t.cost_usd.toFixed(4) + '</span>' : ''}
       </div>
     </div>
   `).join('');
@@ -217,46 +260,82 @@ function esc(s) {
   return s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function logEvent(event, data) {
-  const el = $('#event-log');
-  // Remove empty placeholder
-  const empty = el.querySelector('.empty');
-  if (empty) empty.remove();
-
-  const detail = event === 'task.tool_call'
-    ? `tool: ${data.tool || ''} args: ${JSON.stringify(data.args || {}).slice(0, 100)}`
-    : event === 'task.tool_result'
-    ? `result: ${(data.result || '').slice(0, 200)}`
-    : event === 'task.completed'
-    ? `summary: ${data.summary || ''}`
-    : event === 'task.failed' || event === 'task.cancelled'
-    ? `error: ${data.error || ''}`
-    : '';
-
-  const entry = document.createElement('div');
-  entry.className = 'entry';
-  entry.innerHTML = `<span class="time">${time()}</span><span class="event ${event.replace('task.', '')}">${event}</span><span class="detail">${esc(detail)}</span>`;
-  el.appendChild(entry);
-  el.scrollTop = el.scrollHeight;
-
-  // Update status dot
-  if (event === 'task.started') {
-    $('#status-dot').style.background = 'var(--accent)';
-    $('#status-text').textContent = 'Running...';
-  } else if (event === 'task.completed') {
-    $('#status-dot').style.background = 'var(--green)';
-    $('#status-text').textContent = 'Ready';
-    loadTasks();
-  } else if (event === 'task.failed' || event === 'task.cancelled') {
-    $('#status-dot').style.background = 'var(--red)';
-    $('#status-text').textContent = 'Ready';
-    loadTasks();
+async function showWorkspace(taskId) {
+  const panel = $('#workspace-panel');
+  const tree = $('#file-tree');
+  try {
+    const res = await fetch(`${API}/${taskId}`);
+    const task = await res.json();
+    const files = task.workspace_files || [];
+    if (files.length) {
+      panel.classList.add('visible');
+      tree.innerHTML = files.map(f =>
+        `<div class="file-row">${esc(f)}</div>`
+      ).join('');
+    } else {
+      panel.classList.add('visible');
+      tree.innerHTML = '<div class="empty-files">No files created</div>';
+    }
+  } catch (e) {
+    panel.classList.remove('visible');
   }
 }
 
 function selectTask(id) {
   activeTaskId = id;
   loadTasks();
+  showWorkspace(id);
+}
+
+function logEvent(event, data) {
+  const el = $('#event-log');
+  const emp = el.querySelector('.empty');
+  if (emp) emp.remove();
+
+  let detail = '';
+  if (event === 'sandbox.created') {
+    detail = `container: ${data.sandbox_id || ''}`;
+  } else if (event === 'sandbox.destroyed') {
+    detail = `container: ${data.sandbox_id || ''} destroyed`;
+  } else if (event === 'task.tool_call') {
+    detail = `tool: ${data.tool || ''} args: ${JSON.stringify(data.args || {}).slice(0, 100)}`;
+  } else if (event === 'task.tool_result') {
+    detail = `result: ${(data.result || '').slice(0, 200)}`;
+  } else if (event === 'task.completed') {
+    detail = `summary: ${data.summary || ''}`;
+  } else if (event === 'task.failed' || event === 'task.cancelled') {
+    detail = `error: ${data.error || ''}`;
+  }
+
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  const cssClass = event.replace('task.', '').replace('sandbox.', 'sandbox_');
+  entry.innerHTML = `<span class="time">${time()}</span><span class="event ${cssClass}">${event}</span><span class="detail">${esc(detail)}</span>`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+
+  // Status bar
+  if (event === 'task.started') {
+    $('#status-dot').style.background = 'var(--accent)';
+    $('#status-text').textContent = 'Running...';
+  } else if (event === 'sandbox.created') {
+    const badge = $('#sandbox-badge');
+    badge.textContent = 'sandbox: ' + (data.sandbox_id || '');
+    badge.classList.add('visible');
+  } else if (event === 'sandbox.destroyed') {
+    $('#sandbox-badge').classList.remove('visible');
+  } else if (event === 'task.completed') {
+    $('#status-dot').style.background = 'var(--green)';
+    $('#status-text').textContent = 'Ready';
+    $('#sandbox-badge').classList.remove('visible');
+    loadTasks();
+    if (activeTaskId) showWorkspace(activeTaskId);
+  } else if (event === 'task.failed' || event === 'task.cancelled') {
+    $('#status-dot').style.background = 'var(--red)';
+    $('#status-text').textContent = 'Ready';
+    $('#sandbox-badge').classList.remove('visible');
+    loadTasks();
+  }
 }
 
 async function submitTask(e) {
@@ -276,39 +355,25 @@ async function submitTask(e) {
   activeTaskId = task.id;
   await loadTasks();
 
-  // Clear log
-  const el = $('#event-log');
-  el.innerHTML = '';
+  $('#event-log').innerHTML = '';
 
-  // Connect SSE
   const es = new EventSource(`${API}/${task.id}/stream`);
   eventSources[task.id] = es;
 
-  es.addEventListener('task.started', (e) => {
-    logEvent('task.started', JSON.parse(e.data));
-  });
-  es.addEventListener('task.tool_call', (e) => {
-    logEvent('task.tool_call', JSON.parse(e.data));
-  });
-  es.addEventListener('task.tool_result', (e) => {
-    logEvent('task.tool_result', JSON.parse(e.data));
-  });
-  es.addEventListener('task.completed', (e) => {
-    logEvent('task.completed', JSON.parse(e.data));
-    es.close();
-  });
-  es.addEventListener('task.failed', (e) => {
-    logEvent('task.failed', JSON.parse(e.data));
-    es.close();
-  });
-  es.addEventListener('task.cancelled', (e) => {
-    logEvent('task.cancelled', JSON.parse(e.data));
-    es.close();
+  const events = ['task.started', 'task.tool_call', 'task.tool_result',
+                  'task.completed', 'task.failed', 'task.cancelled',
+                  'sandbox.created', 'sandbox.destroyed'];
+  events.forEach(ev => {
+    es.addEventListener(ev, (e) => {
+      logEvent(ev, JSON.parse(e.data));
+      if (ev === 'task.completed' || ev === 'task.failed' || ev === 'task.cancelled') {
+        es.close();
+      }
+    });
   });
   es.onerror = () => setTimeout(() => es.close(), 3000);
 }
 
-// Load tasks on startup
 loadTasks();
 setInterval(loadTasks, 5000);
 </script>
