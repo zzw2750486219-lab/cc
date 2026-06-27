@@ -11,6 +11,7 @@ COPY api/ ./api/
 COPY orchestrator/ ./orchestrator/
 COPY sandbox/ ./sandbox/
 COPY shared/ ./shared/
+COPY static/ ./static/
 
 EXPOSE 8000
 

@@ -6,7 +6,9 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 
 from api.middleware import AccessLogMiddleware, RequestIDMiddleware
 from api.routes.tasks import router as tasks_router, store, task_queue
@@ -63,6 +65,14 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
 app.include_router(tasks_router)
+
+static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
+if os.path.isdir(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    @app.get("/")
+    async def index():
+        return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 @app.get("/health")

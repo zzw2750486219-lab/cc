@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloud Agent Platform</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d2991d;
+    --radius: 6px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+  }
+
+  /* Sidebar */
+  aside {
+    width: 320px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  aside header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  aside header h1 { font-size: 16px; font-weight: 600; }
+  aside header p { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  #task-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .task-card {
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .task-card:hover { background: #1c2128; }
+  .task-card.active { border-color: var(--accent); background: #1c2333; }
+  .task-card .id { font-size: 11px; color: var(--muted); font-family: monospace; }
+  .task-card .prompt { font-size: 13px; margin: 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task-card .meta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; }
+  .status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+  .status.pending { background: var(--yellow); }
+  .status.running { background: var(--accent); animation: pulse 1s infinite; }
+  .status.completed { background: var(--green); }
+  .status.failed { background: var(--red); }
+  .status.cancelled { background: var(--muted); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Main */
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  main header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  main header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
+  main header span { font-size: 14px; }
+
+  /* Form */
+  #submit-form {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  #submit-form .field { display: flex; flex-direction: column; gap: 4px; }
+  #submit-form .field:first-child { flex: 1; }
+  #submit-form label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  #submit-form input, #submit-form select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-family: inherit;
+  }
+  #submit-form input:focus, #submit-form select:focus { outline: none; border-color: var(--accent); }
+  #submit-form button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 8px 20px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #submit-form button:hover { opacity: 0.9; }
+
+  /* Event log */
+  #event-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  #event-log .entry { padding: 4px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; }
+  #event-log .time { color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 70px; }
+  #event-log .event { font-weight: 600; min-width: 110px; font-size: 12px; }
+  #event-log .event.started { color: var(--accent); }
+  #event-log .event.tool_call { color: var(--yellow); }
+  #event-log .event.tool_result { color: var(--muted); }
+  #event-log .event.completed { color: var(--green); }
+  #event-log .event.failed, .event.cancelled { color: var(--red); }
+  #event-log .detail { color: var(--muted); word-break: break-all; }
+
+  #event-log .empty {
+    color: var(--muted);
+    text-align: center;
+    margin-top: 60px;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<aside>
+  <header>
+    <h1>Cloud Agent Platform</h1>
+    <p>Task history</p>
+  </header>
+  <div id="task-list">
+    <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No tasks yet</div>
+  </div>
+</aside>
+
+<main>
+  <header>
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Ready</span>
+  </header>
+
+  <form id="submit-form" onsubmit="submitTask(event)">
+    <div class="field">
+      <label>Prompt</label>
+      <input type="text" id="prompt" placeholder="e.g. Scan this repo, find all TODOs, write a report"
+             value="Create a file /workspace/data.txt with the numbers 1-10, then write a Python script to sum them and run it">
+    </div>
+    <div class="field">
+      <label>Max Turns</label>
+      <input type="number" id="max-turns" value="10" min="1" max="50" style="width:80px">
+    </div>
+    <button type="submit">Submit</button>
+  </form>
+
+  <div id="event-log">
+    <div class="empty">Submit a task to see live events</div>
+  </div>
+</main>
+
+<script>
+const API = '/api/v1/tasks';
+let activeTaskId = null;
+let eventSources = {};
+
+const $ = (s) => document.querySelector(s);
+
+function time() {
+  return new Date().toLocaleTimeString('en-US', { hour12: false });
+}
+
+async function loadTasks() {
+  const res = await fetch(API);
+  const tasks = await res.json();
+  const list = $('#task-list');
+  if (!tasks.length) {
+    list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No tasks yet</div>';
+    return;
+  }
+  list.innerHTML = tasks.reverse().map(t => `
+    <div class="task-card ${t.id === activeTaskId ? 'active' : ''}" onclick="selectTask('${t.id}')">
+      <div class="id">${t.id}</div>
+      <div class="prompt">${esc(t.prompt)}</div>
+      <div class="meta">
+        <span class="status ${t.status}"></span>
+        <span>${t.status}</span>
+        <span>turns: ${t.num_turns || 0}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function esc(s) {
+  return s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function logEvent(event, data) {
+  const el = $('#event-log');
+  // Remove empty placeholder
+  const empty = el.querySelector('.empty');
+  if (empty) empty.remove();
+
+  const detail = event === 'task.tool_call'
+    ? `tool: ${data.tool || ''} args: ${JSON.stringify(data.args || {}).slice(0, 100)}`
+    : event === 'task.tool_result'
+    ? `result: ${(data.result || '').slice(0, 200)}`
+    : event === 'task.completed'
+    ? `summary: ${data.summary || ''}`
+    : event === 'task.failed' || event === 'task.cancelled'
+    ? `error: ${data.error || ''}`
+    : '';
+
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  entry.innerHTML = `<span class="time">${time()}</span><span class="event ${event.replace('task.', '')}">${event}</span><span class="detail">${esc(detail)}</span>`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+
+  // Update status dot
+  if (event === 'task.started') {
+    $('#status-dot').style.background = 'var(--accent)';
+    $('#status-text').textContent = 'Running...';
+  } else if (event === 'task.completed') {
+    $('#status-dot').style.background = 'var(--green)';
+    $('#status-text').textContent = 'Ready';
+    loadTasks();
+  } else if (event === 'task.failed' || event === 'task.cancelled') {
+    $('#status-dot').style.background = 'var(--red)';
+    $('#status-text').textContent = 'Ready';
+    loadTasks();
+  }
+}
+
+function selectTask(id) {
+  activeTaskId = id;
+  loadTasks();
+}
+
+async function submitTask(e) {
+  e.preventDefault();
+  const prompt = $('#prompt').value.trim();
+  if (!prompt) return;
+
+  const res = await fetch(API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: prompt,
+      max_turns: parseInt($('#max-turns').value) || 10,
+    }),
+  });
+  const task = await res.json();
+  activeTaskId = task.id;
+  await loadTasks();
+
+  // Clear log
+  const el = $('#event-log');
+  el.innerHTML = '';
+
+  // Connect SSE
+  const es = new EventSource(`${API}/${task.id}/stream`);
+  eventSources[task.id] = es;
+
+  es.addEventListener('task.started', (e) => {
+    logEvent('task.started', JSON.parse(e.data));
+  });
+  es.addEventListener('task.tool_call', (e) => {
+    logEvent('task.tool_call', JSON.parse(e.data));
+  });
+  es.addEventListener('task.tool_result', (e) => {
+    logEvent('task.tool_result', JSON.parse(e.data));
+  });
+  es.addEventListener('task.completed', (e) => {
+    logEvent('task.completed', JSON.parse(e.data));
+    es.close();
+  });
+  es.addEventListener('task.failed', (e) => {
+    logEvent('task.failed', JSON.parse(e.data));
+    es.close();
+  });
+  es.addEventListener('task.cancelled', (e) => {
+    logEvent('task.cancelled', JSON.parse(e.data));
+    es.close();
+  });
+  es.onerror = () => setTimeout(() => es.close(), 3000);
+}
+
+// Load tasks on startup
+loadTasks();
+setInterval(loadTasks, 5000);
+</script>
+</body>
+</html>
