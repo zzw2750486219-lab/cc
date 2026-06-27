@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-168%20passed-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-189%20passed-green" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
   <img src="https://img.shields.io/badge/code-~2K%20lines-orange" alt="Code size">
 </p>
@@ -73,9 +73,9 @@ export LLM_API_KEY="sk-..."
 export LLM_BASE_URL="https://api.deepseek.com/anthropic"
 export LLM_MODEL="deepseek-v4-pro"
 make dev
-```
+Then open `http://localhost:8000` — a dashboard with real-time event streaming, task history, workspace file viewer, and task cancel.
 
-Then open `http://localhost:8000/docs` for the Swagger UI.
+Swagger UI at `http://localhost:8000/docs`.
 
 ---
 
@@ -154,9 +154,9 @@ return TaskResult
 | | Inline | Docker Sandbox |
 |---|---|---|
 | Agent runs in | Worker process | Isolated container |
-| Isolation | None | `docker --cpus --memory --network` |
-| Startup | Instant | ~0.5s |
-| Workspace | `$WORKSPACE_DIR` or `/tmp/workspace` | `/workspace` in container |
+| Isolation | Per-task subdirectory | `docker --cpus --memory --network` |
+| Startup | Instant | ~1s |
+| Workspace | `$WORKSPACE_DIR/{task_id}` | `/workspace` in container |
 | Use case | Dev, trusted workloads | Production, untrusted code execution |
 
 Docker mode is what makes it a *Cloud* Agent Platform — each task gets a throwaway container. The worker writes `agent_config.json` to the container, runs `bootstrap.py`, parses the JSON output, and destroys the container. No network connection needed between orchestrator and sandbox.
@@ -174,7 +174,9 @@ Docker mode is what makes it a *Cloud* Agent Platform — each task gets a throw
 | `GET` | `/api/v1/tasks/{id}/stream` | SSE event stream |
 | `POST` | `/api/v1/tasks/{id}/cancel` | Cancel a task |
 
-SSE events: `task.created → task.started → task.tool_call → task.tool_result → task.completed`
+SSE events (inline): `task.created → task.started → task.tool_call → task.tool_result → task.completed`
+
+SSE events (docker): also includes `sandbox.created` (sandbox container up) and `sandbox.destroyed` (container destroyed)
 
 ---
 
@@ -197,13 +199,16 @@ Built-in tools: `bash`, `file_read`, `file_write`, `glob_search`. Add your own b
 - **`model_dump()` for LLM response blocks** — preserves non-standard blocks (e.g. `thinking`), enables DeepSeek & other non-Anthropic backends
 - **`asyncio.Queue` over Redis/Kafka** — zero-config for single-node, clean interface for swapping to a distributed queue later
 - **`AgentConfig` as bootstrap contract** — serialized to JSON, written into sandbox filesystem. No network handshake needed
+- **`os.path.realpath` in tool path checks** — resolves symlinks before validating workspace containment, blocking symlink escape attacks
+- **Hook callback exception isolation** — a crashing hook is logged and skipped, not fatal to the agent loop
+- **Event-driven task list** — SSE events trigger sidebar refresh (30s fallback poll), browser title shows active count
 
 ---
 
 ## Testing
 
 ```bash
-make test         # 168 tests in 2 seconds
+make test         # 189 tests in 2 seconds
 ```
 
 Tests mirror the source tree. LLM calls are mocked, tools use `tmp_path`, Docker calls are patched, API uses `ASGITransport`. No API key, no network, no Docker daemon required.
